@@ -1,4 +1,1158 @@
-<!DOCTYPE html>
+<textarea id="export-data" rows="10" style="width: 100%; padding: 10px; border-radius: 8px;" readonly></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="close-export-btn">Close</button>
+                <button type="button" class="btn btn-primary" id="copy-export">Copy to Clipboard</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toast-container">
+        <!-- Toast notifications will be inserted here -->
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <script>
+        // Data Storage Configuration
+        const STORAGE_KEY = 'melodybox_data';
+        const GITHUB_TOKEN_KEY = 'melodybox_github_token';
+        const AUTO_SYNC_KEY = 'melodybox_auto_sync';
+        
+        // Global data state
+        let appData = {
+            playlists: {},
+            lastUpdated: Date.now()
+        };
+
+        // Sync configuration
+        let syncKey = localStorage.getItem('melodybox_sync_key') || '';
+        let githubToken = localStorage.getItem(GITHUB_TOKEN_KEY) || '';
+        let syncMode = syncKey ? 'remote' : 'local';
+        let autoSync = localStorage.getItem(AUTO_SYNC_KEY) === 'true';
+        let syncTimer = null;
+        let lastSyncTime = 0;
+        const SYNC_INTERVAL = 30000; // 30 seconds
+        let isSyncing = false;
+
+        // YouTube API Variables
+        let tag = document.createElement('script');
+        tag.src = "https://www.youtube.com/iframe_api";
+        let firstScriptTag = document.getElementsByTagName('script')[0];
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+        let player;
+        let currentPlayingId = null;
+        let isPlaying = false;
+        let isSeeking = false;
+        let playerReady = false;
+        let playerState = -1;
+        let playlist = null;
+        let currentPlaylistId = null;
+        let currentSongIndex = -1;
+        let shuffleMode = false;
+        let shuffledIndices = [];
+
+        // DOM Elements
+        const playlistsView = document.getElementById('playlists-view');
+        const playerView = document.getElementById('player-view');
+        const playlistsGrid = document.getElementById('playlists-grid');
+        const createPlaylistCard = document.getElementById('create-playlist-card');
+        const backButton = document.getElementById('back-button');
+        const currentPlaylistTitle = document.getElementById('current-playlist-title');
+        const currentPlaylistCount = document.getElementById('current-playlist-count');
+        const playerCover = document.getElementById('player-cover');
+        const currentSongTitle = document.getElementById('current-song-title');
+        const currentSongArtist = document.getElementById('current-song-artist');
+        const progressBar = document.getElementById('progress-bar');
+        const progress = document.getElementById('progress');
+        const currentTimeDisplay = document.getElementById('current-time');
+        const durationDisplay = document.getElementById('duration');
+        const playPauseButton = document.getElementById('play-pause-button');
+        const prevButton = document.getElementById('prev-button');
+        const nextButton = document.getElementById('next-button');
+        const shuffleButton = document.getElementById('shuffle-button');
+        const lyricsButton = document.getElementById('lyrics-button');
+        const volumeSlider = document.getElementById('volume-slider');
+        const songsContainer = document.getElementById('songs-container');
+        const addSongBtn = document.getElementById('add-song-btn');
+        const shufflePlaylistBtn = document.getElementById('shuffle-playlist-btn');
+        const createPlaylistBtn = document.getElementById('create-playlist-btn');
+        const createPlaylistModal = document.getElementById('create-playlist-modal');
+        const closeCreatePlaylist = document.getElementById('close-create-playlist');
+        const cancelCreatePlaylist = document.getElementById('cancel-create-playlist');
+        const createPlaylistForm = document.getElementById('create-playlist-form');
+        const addSongModal = document.getElementById('add-song-modal');
+        const closeAddSong = document.getElementById('close-add-song');
+        const cancelAddSong = document.getElementById('cancel-add-song');
+        const addSongForm = document.getElementById('add-song-form');
+        const addSongSubmit = document.getElementById('add-song-submit');
+        const lyricsPanel = document.getElementById('lyrics-panel');
+        const lyricsContent = document.getElementById('lyrics-content');
+        const closeLyrics = document.getElementById('close-lyrics');
+        const toastContainer = document.getElementById('toast-container');
+        const settingsButton = document.getElementById('settings-button');
+        const settingsPanel = document.getElementById('settings-panel');
+        const closeSettings = document.getElementById('close-settings');
+        const syncKeyInput = document.getElementById('sync-key');
+        const saveSyncKey = document.getElementById('save-sync-key');
+        const syncStatus = document.getElementById('sync-status');
+        const autoSyncToggle = document.getElementById('auto-sync-toggle');
+        const syncNowBtn = document.getElementById('sync-now-btn');
+        const githubSetup = document.getElementById('github-setup');
+        const githubTokenInput = document.getElementById('github-token');
+        const saveGithubToken = document.getElementById('save-github-token');
+        const exportDataBtn = document.getElementById('export-data');
+        const importDataBtn = document.getElementById('import-data');
+        const exportModal = document.getElementById('export-modal');
+        const closeExport = document.getElementById('close-export');
+        const closeExportBtn = document.getElementById('close-export-btn');
+        const exportDataText = document.getElementById('export-data');
+        const copyExport = document.getElementById('copy-export');
+        const importModal = document.getElementById('import-modal');
+        const closeImport = document.getElementById('close-import');
+        const cancelImport = document.getElementById('cancel-import');
+        const importDataText = document.getElementById('import-data');
+        const confirmImport = document.getElementById('confirm-import');
+
+        // YouTube API callback
+        window.onYouTubeIframeAPIReady = function() {
+            player = new YT.Player('youtube-player', {
+                height: '0',
+                width: '0',
+                playerVars: {
+                    'playsinline': 1,
+                    'controls': 0,
+                    'disablekb': 1
+                },
+                events: {
+                    'onReady': onPlayerReady,
+                    'onStateChange': onPlayerStateChange,
+                    'onError': onPlayerError
+                }
+            });
+        };
+
+        function onPlayerReady(event) {
+            playerReady = true;
+            event.target.setVolume(volumeSlider.value);
+        }
+
+        function onPlayerStateChange(event) {
+            playerState = event.data;
+            
+            if (event.data === YT.PlayerState.PLAYING) {
+                isPlaying = true;
+                playPauseButton.innerHTML = '<i class="fas fa-pause"></i>';
+                startProgressInterval();
+            } else if (event.data === YT.PlayerState.PAUSED) {
+                isPlaying = false;
+                playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
+                clearInterval(progressInterval);
+            } else if (event.data === YT.PlayerState.ENDED) {
+                isPlaying = false;
+                playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
+                clearInterval(progressInterval);
+                playNextSong();
+            }
+        }
+
+        function onPlayerError(event) {
+            showToast(`Error: Could not play this video (Code: ${event.data})`, 'error');
+            playNextSong();
+        }
+
+        // Progress bar update
+        let progressInterval;
+
+        function startProgressInterval() {
+            clearInterval(progressInterval);
+            progressInterval = setInterval(updateProgressBar, 500);
+        }
+
+        function updateProgressBar() {
+            if (playerReady && !isSeeking && playerState === YT.PlayerState.PLAYING) {
+                const currentTime = player.getCurrentTime() || 0;
+                const duration = player.getDuration() || 0;
+                
+                if (duration > 0) {
+                    const percentage = (currentTime / duration) * 100;
+                    progress.style.width = `${percentage}%`;
+                    
+                    currentTimeDisplay.textContent = formatTime(currentTime);
+                    durationDisplay.textContent = formatTime(duration);
+                }
+            }
+        }
+
+        function formatTime(seconds) {
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = Math.floor(seconds % 60);
+            return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
+        }
+
+        // Data Management Functions
+        async function loadData() {
+            if (syncMode === 'local') {
+                // Load from localStorage
+                const storedData = localStorage.getItem(STORAGE_KEY);
+                if (storedData) {
+                    try {
+                        appData = JSON.parse(storedData);
+                    } catch (e) {
+                        console.error('Failed to parse stored data:', e);
+                        appData = { playlists: {}, lastUpdated: Date.now() };
+                    }
+                }
+                renderPlaylists();
+                return true;
+            } else {
+                // Load from GitHub Gist
+                if (isSyncing) return false;
+                
+                try {
+                    isSyncing = true;
+                    syncStatus.innerHTML = '<i class="fas fa-sync fa-spin"></i> Syncing...';
+                    
+                    // Generate gist ID from syncKey
+                    const gistId = await getGistId(syncKey);
+                    
+                    if (!gistId) {
+                        // No existing gist found, create a new one
+                        const created = await createGist(syncKey, appData);
+                        if (created) {
+                            syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
+                            lastSyncTime = Date.now();
+                            saveLocalData(); // Save to local storage as backup
+                            renderPlaylists();
+                            return true;
+                        } else {
+                            throw new Error('Failed to create new Gist');
+                        }
+                    }
+                    
+                    // Gist exists, fetch it
+                    const response = await fetch(`https://api.github.com/gists/${gistId}`, {
+                        headers: githubToken ? { 'Authorization': `token ${githubToken}` } : {}
+                    });
+                    
+                    if (response.ok) {
+                        const gistData = await response.json();
+                        const fileNames = Object.keys(gistData.files);
+                        if (fileNames.length > 0) {
+                            const content = gistData.files[fileNames[0]].content;
+                            try {
+                                const remoteData = JSON.parse(content);
+                                
+                                // Compare timestamps to decide which data to use
+                                if (remoteData.lastUpdated > appData.lastUpdated) {
+                                    appData = remoteData;
+                                    saveLocalData(); // Save to local storage as backup
+                                }
+                                
+                                syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
+                                lastSyncTime = Date.now();
+                                renderPlaylists();
+                                return true;
+                            } catch (e) {
+                                console.error('Failed to parse Gist content:', e);
+                                throw new Error('Invalid data in Gist');
+                            }
+                        }
+                    } else if (response.status === 404) {
+                        // Gist might have been deleted, create a new one
+                        const created = await createGist(syncKey, appData);
+                        if (created) {
+                            syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
+                            lastSyncTime = Date.now();
+                            saveLocalData();
+                            renderPlaylists();
+                            return true;
+                        } else {
+                            throw new Error('Failed to create new Gist');
+                        }
+                    } else {
+                        throw new Error(`GitHub API Error: ${response.status}`);
+                    }
+                } catch (error) {
+                    console.error('Sync failed:', error);
+                    syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #ff0000;"></i> Sync Failed, Using Local Data';
+                    
+                    // Fall back to local data
+                    const storedData = localStorage.getItem(STORAGE_KEY);
+                    if (storedData) {
+                        try {
+                            appData = JSON.parse(storedData);
+                        } catch (e) {
+                            console.error('Failed to parse stored data:', e);
+                        }
+                    }
+                    renderPlaylists();
+                    return false;
+                } finally {
+                    isSyncing = false;
+                }
+            }
+        }
+
+        function saveLocalData() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+        }
+
+        async function saveRemoteData() {
+            if (syncMode !== 'remote' || !syncKey) {
+                return false;
+            }
+            
+            if (isSyncing) return false;
+            
+            try {
+                isSyncing = true;
+                syncStatus.innerHTML = '<i class="fas fa-sync fa-spin"></i> Syncing...';
+                
+                appData.lastUpdated = Date.now();
+                
+                // Get or create gist ID
+                const gistId = await getGistId(syncKey);
+                
+                if (!gistId) {
+                    // Create new gist
+                    const created = await createGist(syncKey, appData);
+                    
+                    if (created) {
+                        syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
+                        lastSyncTime = Date.now();
+                        saveLocalData(); // Save to local storage as backup
+                        return true;
+                    } else {
+                        throw new Error('Failed to create Gist');
+                    }
+                } else {
+                    // Update existing gist
+                    const updateResponse = await fetch(`https://api.github.com/gists/${gistId}`, {
+                        method: 'PATCH',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `token ${githubToken}`
+                        },
+                        body: JSON.stringify({
+                            files: {
+                                [`melodybox-${syncKey.substring(0, 8)}.json`]: {
+                                    content: JSON.stringify(appData)
+                                }
+                            }
+                        })
+                    });
+                    
+                    if (updateResponse.ok) {
+                        syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
+                        lastSyncTime = Date.now();
+                        saveLocalData(); // Save to local storage as backup
+                        return true;
+                    } else {
+                        throw new Error(`Failed to update Gist: ${updateResponse.status}`);
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to save remote data:', error);
+                syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #ff0000;"></i> Sync Failed, Using Local Data';
+                return false;
+            } finally {
+                isSyncing = false;
+            }
+        }
+
+        // GitHub Gist helper functions
+        async function getGistId(syncKey) {
+            try {
+                // First, check if we already have the gist ID in localStorage
+                const storedGistId = localStorage.getItem(`gist_id_${syncKey}`);
+                if (storedGistId) {
+                    // Verify that the gist still exists
+                    const response = await fetch(`https://api.github.com/gists/${storedGistId}`, {
+                        headers: githubToken ? { 'Authorization': `token ${githubToken}` } : {}
+                    });
+                    
+                    if (response.ok) {
+                        return storedGistId;
+                    }
+                }
+                
+                // If no stored ID or gist was deleted, search for it
+                if (githubToken) {
+                    // If we have a GitHub token, search user's gists
+                    const response = await fetch('https://api.github.com/gists', {
+                        headers: { 'Authorization': `token ${githubToken}` }
+                    });
+                    
+                    if (response.ok) {
+                        const gists = await response.json();
+                        // Generate the expected filename
+                        const fileName = `melodybox-${syncKey.substring(0, 8)}.json`;
+                        
+                        // Find the gist with our filename
+                        for (const gist of gists) {
+                            if (gist.files && gist.files[fileName]) {
+                                // Store the ID for future use
+                                localStorage.setItem(`gist_id_${syncKey}`, gist.id);
+                                return gist.id;
+                            }
+                        }
+                    }
+                }
+                
+                // If we couldn't find an existing gist, return null
+                return null;
+            } catch (error) {
+                console.error('Error finding Gist ID:', error);
+                return null;
+            }
+        }
+
+        async function createGist(syncKey, data) {
+            if (!githubToken) {
+                showToast('GitHub token required to create Gist. Please add it in Settings.', 'error');
+                githubSetup.classList.add('active');
+                return false;
+            }
+            
+            try {
+                const fileName = `melodybox-${syncKey.substring(0, 8)}.json`;
+                
+                const response = await fetch('https://api.github.com/gists', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `token ${githubToken}`
+                    },
+                    body: JSON.stringify({
+                        description: `MelodyBox Playlists - ${syncKey}`,
+                        public: false,
+                        files: {
+                            [fileName]: {
+                                content: JSON.stringify(data)
+                            }
+                        }
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    // Store the ID for future use
+                    localStorage.setItem(`gist_id_${syncKey}`, result.id);
+                    return true;
+                } else {
+                    throw new Error(`Failed to create Gist: ${response.status}`);
+                }
+            } catch (error) {
+                console.error('Error creating Gist:', error);
+                return false;
+            }
+        }
+
+        // Setup sync timer
+        function setupSyncTimer() {
+            if (syncTimer) clearInterval(syncTimer);
+            
+            if (syncMode === 'remote' && autoSync) {
+                syncTimer = setInterval(async () => {
+                    if (syncKey && !isSyncing && (Date.now() - lastSyncTime > SYNC_INTERVAL)) {
+                        await loadData(); // Check for remote changes
+                    }
+                }, SYNC_INTERVAL);
+            }
+        }
+
+        // Save changes with sync
+        async function saveChanges() {
+            // Always save locally first
+            saveLocalData();
+            
+            // Then sync remotely if needed
+            if (syncMode === 'remote' && autoSync) {
+                return await saveRemoteData();
+            }
+            
+            return true;
+        }
+
+        // Manual sync
+        async function syncNow() {
+            if (syncMode !== 'remote' || !syncKey) {
+                showToast('Please set up a sync key first', 'error');
+                return false;
+            }
+            
+            // First, try to get latest data
+            const success = await loadData();
+            
+            if (success) {
+                // Then push our changes
+                return await saveRemoteData();
+            }
+            
+            return false;
+        }
+
+        // Render playlists in the grid
+        function renderPlaylists() {
+            // Clear existing playlists (except create button)
+            while (playlistsGrid.firstChild && playlistsGrid.firstChild !== createPlaylistCard) {
+                playlistsGrid.removeChild(playlistsGrid.firstChild);
+            }
+            
+            // Add playlists
+            const playlists = appData.playlists || {};
+            Object.keys(playlists).forEach(key => {
+                const playlist = playlists[key];
+                const songCount = playlist.songs ? Object.keys(playlist.songs).length : 0;
+                const coverUrl = playlist.coverUrl || 'https://via.placeholder.com/300x300?text=Music';
+                
+                const playlistCard = document.createElement('div');
+                playlistCard.className = 'playlist-card';
+                playlistCard.innerHTML = `
+                    <div class="playlist-cover" style="background-image: url('${coverUrl}')"></div>
+                    <div class="playlist-info">
+                        <h3 class="playlist-title">${playlist.title}</h3>
+                        <p class="playlist-count">${songCount} songs</p>
+                    </div>
+                `;
+                
+                playlistCard.addEventListener('click', () => openPlaylist(key));
+                playlistsGrid.insertBefore(playlistCard, createPlaylistCard);
+            });
+        }
+
+        // Load a specific playlist and switch to player view
+        function openPlaylist(playlistId) {
+            currentPlaylistId = playlistId;
+            playlist = appData.playlists[playlistId] || { songs: {} };
+            
+            currentPlaylistTitle.textContent = playlist.title || 'Untitled Playlist';
+            
+            const songs = playlist.songs || {};
+            const songCount = Object.keys(songs).length;
+            currentPlaylistCount.textContent = `${songCount} songs`;
+            
+            // Clear and rebuild song list
+            songsContainer.innerHTML = '';
+            let index = 0;
+            
+            Object.keys(songs).forEach(songId => {
+                const song = songs[songId];
+                const songElement = createSongElement(song, songId, index);
+                songsContainer.appendChild(songElement);
+                index++;
+            });
+            
+            // Reset player if needed
+            if (currentSongIndex === -1 && songCount > 0) {
+                currentSongIndex = 0;
+            }
+            
+            // Switch to player view
+            playlistsView.classList.remove('active');
+            playerView.classList.add('active');
+        }
+
+        // Create a song element for the list
+        function createSongElement(song, songId, index) {
+            const songItem = document.createElement('div');
+            songItem.className = 'song-item';
+            songItem.dataset.id = songId;
+            songItem.dataset.index = index;
+            
+            const thumbnailUrl = song.thumbnailUrl || 'https://via.placeholder.com/120x120?text=Music';
+            
+            songItem.innerHTML = `
+                <div class="song-number">${index + 1}</div>
+                <div class="song-thumbnail" style="background-image: url('${thumbnailUrl}')"></div>
+                <div class="song-info">
+                    <div class="song-title">${song.title || 'Untitled'}</div>
+                    <div class="song-artist">${song.artist || 'Unknown Artist'}</div>
+                </div>
+                <div class="song-duration">${song.duration || '--:--'}</div>
+                <div class="song-actions">
+                    <button class="song-action-btn delete-song" data-id="${songId}">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            `;
+            
+            songItem.addEventListener('click', (e) => {
+                if (!e.target.closest('.song-actions')) {
+                    currentSongIndex = parseInt(songItem.dataset.index);
+                    playSong(song, songId);
+                }
+            });
+            
+            // Setup delete button
+            const deleteBtn = songItem.querySelector('.delete-song');
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                deleteSong(songId);
+            });
+            
+            return songItem;
+        }
+
+        // Play a song
+        function playSong(song, songId) {
+            if (!playerReady) return;
+            
+            // Update UI
+            const allSongItems = document.querySelectorAll('.song-item');
+            allSongItems.forEach(item => item.classList.remove('active'));
+            
+            const activeSong = document.querySelector(`.song-item[data-id="${songId}"]`);
+            if (activeSong) activeSong.classList.add('active');
+            
+            // Update player info
+            currentSongTitle.textContent = song.title || 'Untitled';
+            currentSongArtist.textContent = song.artist || 'Unknown Artist';
+            
+            const thumbnailUrl = song.thumbnailUrl || 'https://via.placeholder.com/120x120?text=Music';
+            playerCover.style.backgroundImage = `url('${thumbnailUrl}')`;
+            
+            // Load and play YouTube video
+            currentPlayingId = songId;
+            player.loadVideoById(song.youtubeId);
+            
+            // Close lyrics panel if open
+            lyricsPanel.classList.remove('active');
+        }
+
+        // Play next song
+        function playNextSong() {
+            if (!playlist || !playlist.songs) return;
+            
+            const songIds = Object.keys(playlist.songs);
+            if (songIds.length === 0) return;
+            
+            if (shuffleMode) {
+                // Get next shuffled index
+                const currentShuffleIndex = shuffledIndices.indexOf(currentSongIndex);
+                const nextShuffleIndex = (currentShuffleIndex + 1) % shuffledIndices.length;
+                currentSongIndex = shuffledIndices[nextShuffleIndex];
+            } else {
+                // Regular next
+                currentSongIndex = (currentSongIndex + 1) % songIds.length;
+            }
+            
+            const nextSongId = songIds[currentSongIndex];
+            playSong(playlist.songs[nextSongId], nextSongId);
+        }
+
+        // Play previous song
+        function playPrevSong() {
+            if (!playlist || !playlist.songs) return;
+            
+            const songIds = Object.keys(playlist.songs);
+            if (songIds.length === 0) return;
+            
+            if (shuffleMode) {
+                // Get previous shuffled index
+                const currentShuffleIndex = shuffledIndices.indexOf(currentSongIndex);
+                const prevShuffleIndex = (currentShuffleIndex - 1 + shuffledIndices.length) % shuffledIndices.length;
+                currentSongIndex = shuffledIndices[prevShuffleIndex];
+            } else {
+                // Regular previous
+                currentSongIndex = (currentSongIndex - 1 + songIds.length) % songIds.length;
+            }
+            
+            const prevSongId = songIds[currentSongIndex];
+            playSong(playlist.songs[prevSongId], prevSongId);
+        }
+
+        // Toggle play/pause
+        function togglePlayPause() {
+            if (!playerReady) return;
+            
+            if (playerState === YT.PlayerState.PLAYING) {
+                player.pauseVideo();
+            } else {
+                if (currentSongIndex === -1) {
+                    // Start playing the first song
+                    const songIds = Object.keys(playlist.songs || {});
+                    if (songIds.length > 0) {
+                        currentSongIndex = 0;
+                        const firstSongId = songIds[0];
+                        playSong(playlist.songs[firstSongId], firstSongId);
+                    }
+                } else {
+                    player.playVideo();
+                }
+            }
+        }
+
+        // Shuffle playlist
+        function toggleShuffle() {
+            shuffleMode = !shuffleMode;
+            shuffleButton.classList.toggle('active', shuffleMode);
+            
+            if (shuffleMode) {
+                // Create shuffled indices
+                const songIds = Object.keys(playlist.songs || {});
+                shuffledIndices = Array.from({length: songIds.length}, (_, i) => i);
+                
+                // Fisher-Yates shuffle
+                for (let i = shuffledIndices.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [shuffledIndices[i], shuffledIndices[j]] = [shuffledIndices[j], shuffledIndices[i]];
+                }
+                
+                // Make sure current song is first
+                if (currentSongIndex !== -1) {
+                    const currentIndexPos = shuffledIndices.indexOf(currentSongIndex);
+                    shuffledIndices.splice(currentIndexPos, 1);
+                    shuffledIndices.unshift(currentSongIndex);
+                }
+                
+                showToast('Shuffle mode enabled', 'success');
+            } else {
+                showToast('Shuffle mode disabled', 'success');
+            }
+        }
+
+        // Delete a song
+        function deleteSong(songId) {
+            if (confirm('Are you sure you want to delete this song?')) {
+                if (!appData.playlists[currentPlaylistId].songs[songId]) {
+                    showToast('Song not found', 'error');
+                    return;
+                }
+                
+                delete appData.playlists[currentPlaylistId].songs[songId];
+                
+                saveChanges().then(success => {
+                    showToast('Song deleted successfully', 'success');
+                    
+                    // Reload playlist view
+                    openPlaylist(currentPlaylistId);
+                    
+                    // If this was the currently playing song, play next
+                    if (currentPlayingId === songId) {
+                        playNextSong();
+                    }
+                });
+            }
+        }
+
+        // Create a new playlist
+        function createPlaylist(title, coverUrl) {
+            const newPlaylistId = 'p_' + Date.now();
+            
+            appData.playlists[newPlaylistId] = {
+                title: title,
+                coverUrl: coverUrl || null,
+                createdAt: Date.now(),
+                songs: {}
+            };
+            
+            saveChanges().then(success => {
+                showToast('Playlist created successfully', 'success');
+                createPlaylistModal.classList.remove('active');
+                createPlaylistForm.reset();
+                renderPlaylists();
+            });
+        }
+
+        // Add a song to the current playlist
+        function addSong(youtubeUrl, customTitle, customArtist, customThumbnail) {
+            if (!currentPlaylistId) return;
+            
+            // Show loading state
+            const submitButton = addSongSubmit.querySelector('span');
+            const originalText = submitButton.textContent;
+            submitButton.innerHTML = '<div class="loading-spinner"></div> Adding...';
+            addSongSubmit.disabled = true;
+            
+            // Extract YouTube ID from URL
+            const youtubeId = extractYoutubeId(youtubeUrl);
+            
+            if (!youtubeId) {
+                showToast('Invalid YouTube URL', 'error');
+                submitButton.textContent = originalText;
+                addSongSubmit.disabled = false;
+                return;
+            }
+            
+            // Fetch video info from YouTube
+            fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${youtubeId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const title = customTitle || data.title || 'Unknown Title';
+                    let artist = customArtist;
+                    
+                    // Try to extract artist from title if not provided
+                    if (!artist && data.title) {
+                        const separator = data.title.includes(' - ') ? ' - ' : ' – ';
+                        if (data.title.includes(separator)) {
+                            artist = data.title.split(separator)[0].trim();
+                        } else {
+                            artist = data.author_name || 'Unknown Artist';
+                        }
+                    }
+                    
+                    // Default thumbnail from YouTube
+                    let thumbnailUrl = customThumbnail;
+                    if (!thumbnailUrl) {
+                        thumbnailUrl = `https://img.youtube.com/vi/${youtubeId}/hqdefault.jpg`;
+                    }
+                    
+                    // Add to playlist
+                    const newSongId = 's_' + Date.now();
+                    if (!appData.playlists[currentPlaylistId].songs) {
+                        appData.playlists[currentPlaylistId].songs = {};
+                    }
+                    
+                    appData.playlists[currentPlaylistId].songs[newSongId] = {
+                        youtubeId: youtubeId,
+                        title: title,
+                        artist: artist || 'Unknown Artist',
+                        thumbnailUrl: thumbnailUrl,
+                        addedAt: Date.now()
+                    };
+                    
+                    saveChanges().then(success => {
+                        showToast('Song added successfully', 'success');
+                        addSongModal.classList.remove('active');
+                        addSongForm.reset();
+                        
+                        // Reload playlist
+                        openPlaylist(currentPlaylistId);
+                    }).finally(() => {
+                        submitButton.textContent = originalText;
+                        addSongSubmit.disabled = false;
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching video info:', error);
+                    showToast('Error fetching video info', 'error');
+                    submitButton.textContent = originalText;
+                    addSongSubmit.disabled = false;
+                });
+        }
+
+        // Extract YouTube ID from URL
+        function extractYoutubeId(url) {
+            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+            const match = url.match(regExp);
+            return (match && match[2].length === 11) ? match[2] : null;
+        }
+
+        // Show lyrics for current song
+        function showLyrics() {
+            if (!currentPlayingId || !playlist || !playlist.songs) return;
+            
+            const song = playlist.songs[currentPlayingId];
+            if (!song) return;
+            
+            lyricsPanel.classList.add('active');
+            lyricsContent.textContent = 'Searching for lyrics...';
+            
+            // Try to fetch lyrics from public API
+            const searchTerm = `${song.artist} ${song.title}`;
+            fetch(`https://api.lyrics.ovh/v1/${encodeURIComponent(song.artist)}/${encodeURIComponent(song.title)}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.lyrics) {
+                        lyricsContent.textContent = data.lyrics;
+                    } else {
+                        lyricsContent.textContent = 'Lyrics not found. Try searching for:\n' + searchTerm;
+                    }
+                })
+                .catch(error => {
+                    lyricsContent.textContent = 'Could not load lyrics. Try searching for:\n' + searchTerm;
+                    console.error('Lyrics error:', error);
+                });
+        }
+
+        // Change sync mode
+        function changeSyncMode(key) {
+            if (key) {
+                syncKey = key;
+                syncMode = 'remote';
+                localStorage.setItem('melodybox_sync_key', key);
+                syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #feb47b;"></i> Setting up sync...';
+                
+                // Show GitHub token setup if not already provided
+                if (!githubToken) {
+                    githubSetup.classList.add('active');
+                    showToast('Please add a GitHub token to enable sync', 'success');
+                } else {
+                    loadData().then(success => {
+                        if (success) {
+                            syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
+                        }
+                    });
+                }
+            } else {
+                syncKey = '';
+                syncMode = 'local';
+                localStorage.removeItem('melodybox_sync_key');
+                syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #ff7e5f;"></i> Local Mode';
+                githubSetup.classList.remove('active');
+            }
+            
+            setupSyncTimer();
+        }
+
+        // Set GitHub token
+        function setGithubToken(token) {
+            if (token) {
+                githubToken = token;
+                localStorage.setItem(GITHUB_TOKEN_KEY, token);
+                githubSetup.classList.remove('active');
+                
+                // Try to sync with the new token
+                if (syncMode === 'remote') {
+                    loadData().then(success => {
+                        if (success) {
+                            syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
+                            showToast('GitHub token saved, sync is now active', 'success');
+                        }
+                    });
+                }
+            }
+        }
+
+        // Toggle auto sync
+        function toggleAutoSync(enabled) {
+            autoSync = enabled;
+            localStorage.setItem(AUTO_SYNC_KEY, enabled.toString());
+            setupSyncTimer();
+            
+            if (enabled) {
+                showToast('Auto sync enabled', 'success');
+            } else {
+                showToast('Auto sync disabled. Use "Sync Now" to update manually.', 'success');
+            }
+        }
+
+        // Export data
+        function exportData() {
+            exportDataText.value = JSON.stringify(appData, null, 2);
+            exportModal.classList.add('active');
+        }
+
+        // Import data
+        function importData() {
+            importModal.classList.add('active');
+        }
+
+        function processImport() {
+            try {
+                const importedData = JSON.parse(importDataText.value);
+                
+                if (!importedData.playlists) {
+                    throw new Error('Invalid data format');
+                }
+                
+                appData = importedData;
+                saveChanges().then(success => {
+                    showToast('Data imported successfully', 'success');
+                    importModal.classList.remove('active');
+                    renderPlaylists();
+                });
+            } catch (error) {
+                showToast('Invalid data format. Please check your import data.', 'error');
+                console.error('Import error:', error);
+            }
+        }
+
+        // Show toast notification
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            
+            const icon = type === 'success' ? 'check-circle' : 'exclamation-circle';
+            
+            toast.innerHTML = `
+                <i class="fas fa-${icon} toast-icon"></i>
+                <div>${message}</div>
+            `;
+            
+            toastContainer.appendChild(toast);
+            
+            // Remove toast after 3 seconds
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => {
+                    if (toast.parentNode === toastContainer) {
+                        toastContainer.removeChild(toast);
+                    }
+                }, 500);
+            }, 3000);
+        }
+
+        // Event Listeners
+        createPlaylistCard.addEventListener('click', () => {
+            createPlaylistModal.classList.add('active');
+        });
+
+        createPlaylistBtn.addEventListener('click', () => {
+            createPlaylistModal.classList.add('active');
+        });
+
+        closeCreatePlaylist.addEventListener('click', () => {
+            createPlaylistModal.classList.remove('active');
+        });
+
+        cancelCreatePlaylist.addEventListener('click', () => {
+            createPlaylistModal.classList.remove('active');
+        });
+
+        createPlaylistForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const title = document.getElementById('playlist-title').value;
+            const coverUrl = document.getElementById('playlist-cover-url').value;
+            createPlaylist(title, coverUrl);
+        });
+
+        addSongBtn.addEventListener('click', () => {
+            addSongModal.classList.add('active');
+        });
+
+        closeAddSong.addEventListener('click', () => {
+            addSongModal.classList.remove('active');
+        });
+
+        cancelAddSong.addEventListener('click', () => {
+            addSongModal.classList.remove('active');
+        });
+
+        addSongForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const youtubeUrl = document.getElementById('song-url').value;
+            const customTitle = document.getElementById('song-title').value;
+            const customArtist = document.getElementById('song-artist').value;
+            const customThumbnail = document.getElementById('song-thumbnail').value;
+            addSong(youtubeUrl, customTitle, customArtist, customThumbnail);
+        });
+
+        backButton.addEventListener('click', () => {
+            playerView.classList.remove('active');
+            playlistsView.classList.add('active');
+        });
+
+        playPauseButton.addEventListener('click', togglePlayPause);
+        
+        nextButton.addEventListener('click', playNextSong);
+        
+        prevButton.addEventListener('click', playPrevSong);
+        
+        shuffleButton.addEventListener('click', toggleShuffle);
+        
+        shufflePlaylistBtn.addEventListener('click', toggleShuffle);
+        
+        lyricsButton.addEventListener('click', showLyrics);
+        
+        closeLyrics.addEventListener('click', () => {
+            lyricsPanel.classList.remove('active');
+        });
+
+        settingsButton.addEventListener('click', () => {
+            syncKeyInput.value = syncKey;
+            githubTokenInput.value = '';  // For security, don't show the token
+            autoSyncToggle.checked = autoSync;
+            settingsPanel.classList.add('active');
+        });
+        
+        closeSettings.addEventListener('click', () => {
+            settingsPanel.classList.remove('active');
+        });
+        
+        saveSyncKey.addEventListener('click', () => {
+            const newKey = syncKeyInput.value.trim();
+            changeSyncMode(newKey);
+        });
+        
+        saveGithubToken.addEventListener('click', () => {
+            const token = githubTokenInput.value.trim();
+            setGithubToken(token);
+        });
+        
+        autoSyncToggle.addEventListener('change', () => {
+            toggleAutoSync(autoSyncToggle.checked);
+        });
+        
+        syncNowBtn.addEventListener('click', async () => {
+            const success = await syncNow();
+            if (success) {
+                showToast('Sync completed successfully', 'success');
+            } else {
+                showToast('Sync failed. Please check your connection and settings.', 'error');
+            }
+        });
+        
+        exportDataBtn.addEventListener('click', exportData);
+        
+        importDataBtn.addEventListener('click', importData);
+        
+        closeExport.addEventListener('click', () => {
+            exportModal.classList.remove('active');
+        });
+        
+        closeExportBtn.addEventListener('click', () => {
+            exportModal.classList.remove('active');
+        });
+        
+        copyExport.addEventListener('click', () => {
+            exportDataText.select();
+            document.execCommand('copy');
+            showToast('Data copied to clipboard', 'success');
+        });
+        
+        closeImport.addEventListener('click', () => {
+            importModal.classList.remove('active');
+        });
+        
+        cancelImport.addEventListener('click', () => {
+            importModal.classList.remove('active');
+        });
+        
+        confirmImport.addEventListener('click', processImport);
+
+        // Progress bar seeking
+        progressBar.addEventListener('click', (e) => {
+            if (!playerReady || playerState === -1) return;
+            
+            const rect = progressBar.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / rect.width;
+            const duration = player.getDuration();
+            
+            isSeeking = true;
+            player.seekTo(duration * ratio);
+            setTimeout(() => { isSeeking = false; }, 500);
+        });
+
+        // Volume control
+        volumeSlider.addEventListener('input', () => {
+            if (playerReady) {
+                player.setVolume(volumeSlider.value);
+            }
+        });
+
+        // Initialize
+        syncKeyInput.value = syncKey;
+        autoSyncToggle.checked = autoSync;
+        
+        if (syncKey) {
+            syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #feb47b;"></i> Setting up sync...';
+            loadData().then(success => {
+                if (success) {
+                    syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
+                }
+            });
+        } else {
+            syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #ff7e5f;"></i> Local Mode';
+            loadData();
+        }
+        
+        setupSyncTimer();
+    </script>
+</body>
+</html><!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -328,7 +1482,8 @@
         }
 
         input[type="text"], 
-        input[type="url"] {
+        input[type="url"],
+        input[type="password"] {
             width: 100%;
             padding: 12px 15px;
             border: 1px solid #ddd;
@@ -503,47 +1658,6 @@
             cursor: pointer;
         }
 
-        /* Toast Notifications */
-        .toast-container {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 1001;
-        }
-
-        .toast {
-            padding: 15px 20px;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-            margin-top: 10px;
-            display: flex;
-            align-items: center;
-            animation: slideIn 0.3s, fadeOut 0.5s 2.5s forwards;
-            max-width: 300px;
-        }
-
-        .toast.success {
-            border-left: 4px solid #4CAF50;
-        }
-
-        .toast.error {
-            border-left: 4px solid #f44336;
-        }
-
-        .toast-icon {
-            margin-right: 10px;
-            font-size: 1.2rem;
-        }
-
-        .toast.success .toast-icon {
-            color: #4CAF50;
-        }
-
-        .toast.error .toast-icon {
-            color: #f44336;
-        }
-
         /* Sync status indicator */
         .sync-status {
             display: flex;
@@ -624,6 +1738,116 @@
             font-size: 1.2rem;
         }
 
+        /* Toast Notifications */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1001;
+        }
+
+        .toast {
+            padding: 15px 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            animation: slideIn 0.3s, fadeOut 0.5s 2.5s forwards;
+            max-width: 300px;
+        }
+
+        .toast.success {
+            border-left: 4px solid #4CAF50;
+        }
+
+        .toast.error {
+            border-left: 4px solid #f44336;
+        }
+
+        .toast-icon {
+            margin-right: 10px;
+            font-size: 1.2rem;
+        }
+
+        .toast.success .toast-icon {
+            color: #4CAF50;
+        }
+
+        .toast.error .toast-icon {
+            color: #f44336;
+        }
+
+        /* Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 46px;
+            height: 24px;
+            margin-left: 10px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: var(--primary);
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(22px);
+        }
+
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            margin: 15px 0;
+        }
+
+        .toggle-label {
+            margin-right: 10px;
+        }
+
+        .github-setup {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f7f7f7;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .github-setup.active {
+            display: block;
+        }
+
         @keyframes slideIn {
             from { transform: translateX(100%); }
             to { transform: translateX(0); }
@@ -657,6 +1881,10 @@
             .control-button.play-pause {
                 font-size: 2rem;
             }
+        }
+
+        .sync-now-btn {
+            margin-top: 15px;
         }
     </style>
 </head>
@@ -781,6 +2009,7 @@
         <div class="settings-section">
             <h3>Data Sync</h3>
             <p>Share your playlists across devices by creating and using a sync key.</p>
+            
             <div class="form-group">
                 <label for="sync-key">Sync Key (Create or Enter an Existing One)</label>
                 <div class="sync-config">
@@ -792,7 +2021,31 @@
                     Local Mode
                 </p>
             </div>
-            <div class="form-group">
+            
+            <div class="toggle-container">
+                <span class="toggle-label">Auto Sync:</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="auto-sync-toggle">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            
+            <button class="btn btn-secondary sync-now-btn" id="sync-now-btn">
+                <i class="fas fa-sync"></i> Sync Now
+            </button>
+
+            <div class="github-setup" id="github-setup">
+                <h4>GitHub Token (Optional)</h4>
+                <p>For cross-device sync, you can use a GitHub token. This is only needed once and isn't saved anywhere.</p>
+                <div class="form-group">
+                    <label for="github-token">GitHub Personal Access Token</label>
+                    <input type="password" id="github-token" placeholder="Enter your GitHub token">
+                    <small>Only requires 'gist' scope. <a href="https://github.com/settings/tokens/new" target="_blank">Create token</a></small>
+                </div>
+                <button class="btn btn-primary" id="save-github-token">Save Token</button>
+            </div>
+            
+            <div class="form-group" style="margin-top: 15px;">
                 <button class="btn btn-secondary" id="export-data">Export Data</button>
                 <button class="btn btn-secondary" id="import-data">Import Data</button>
             </div>
@@ -895,943 +2148,4 @@
             </div>
             <div class="form-group">
                 <label for="export-data">Copy this data to save your playlists</label>
-                <textarea id="export-data" rows="10" style="width: 100%; padding: 10px; border-radius: 8px;" readonly></textarea>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" id="close-export-btn">Close</button>
-                <button type="button" class="btn btn-primary" id="copy-export">Copy to Clipboard</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="toast-container" id="toast-container">
-        <!-- Toast notifications will be inserted here -->
-    </div>
-
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    <script>
-        // Data Storage Configuration
-        const STORAGE_KEY = 'melodybox_data';
-        const API_URL = 'https://api.jsonbin.io/v3/b';
-        
-        // You will need to get this API key from JSONBin.io
-        // For GitHub Pages this can be added as a repository secret
-        // And injected during build with GitHub Actions
-        const API_KEY = '$2a$10$Iu/pklpnHsXlC1NXIW3YwuvlWbUl54X0oxSFRMgdi9Yp0BrxVbX3.'; // Optional, can be left empty for local mode
-
-        // Global data state
-        let appData = {
-            playlists: {},
-            lastUpdated: Date.now()
-        };
-
-        // Sync configuration
-        let syncKey = localStorage.getItem('melodybox_sync_key') || '';
-        let syncMode = syncKey ? 'remote' : 'local';
-        let syncTimer = null;
-        const SYNC_INTERVAL = 30000; // 30 seconds
-
-        // YouTube API Variables
-        let tag = document.createElement('script');
-        tag.src = "https://www.youtube.com/iframe_api";
-        let firstScriptTag = document.getElementsByTagName('script')[0];
-        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-
-        let player;
-        let currentPlayingId = null;
-        let isPlaying = false;
-        let isSeeking = false;
-        let playerReady = false;
-        let playerState = -1;
-        let playlist = null;
-        let currentPlaylistId = null;
-        let currentSongIndex = -1;
-        let shuffleMode = false;
-        let shuffledIndices = [];
-
-        // DOM Elements
-        const playlistsView = document.getElementById('playlists-view');
-        const playerView = document.getElementById('player-view');
-        const playlistsGrid = document.getElementById('playlists-grid');
-        const createPlaylistCard = document.getElementById('create-playlist-card');
-        const backButton = document.getElementById('back-button');
-        const currentPlaylistTitle = document.getElementById('current-playlist-title');
-        const currentPlaylistCount = document.getElementById('current-playlist-count');
-        const playerCover = document.getElementById('player-cover');
-        const currentSongTitle = document.getElementById('current-song-title');
-        const currentSongArtist = document.getElementById('current-song-artist');
-        const progressBar = document.getElementById('progress-bar');
-        const progress = document.getElementById('progress');
-        const currentTimeDisplay = document.getElementById('current-time');
-        const durationDisplay = document.getElementById('duration');
-        const playPauseButton = document.getElementById('play-pause-button');
-        const prevButton = document.getElementById('prev-button');
-        const nextButton = document.getElementById('next-button');
-        const shuffleButton = document.getElementById('shuffle-button');
-        const lyricsButton = document.getElementById('lyrics-button');
-        const volumeSlider = document.getElementById('volume-slider');
-        const songsContainer = document.getElementById('songs-container');
-        const addSongBtn = document.getElementById('add-song-btn');
-        const shufflePlaylistBtn = document.getElementById('shuffle-playlist-btn');
-        const createPlaylistBtn = document.getElementById('create-playlist-btn');
-        const createPlaylistModal = document.getElementById('create-playlist-modal');
-        const closeCreatePlaylist = document.getElementById('close-create-playlist');
-        const cancelCreatePlaylist = document.getElementById('cancel-create-playlist');
-        const createPlaylistForm = document.getElementById('create-playlist-form');
-        const addSongModal = document.getElementById('add-song-modal');
-        const closeAddSong = document.getElementById('close-add-song');
-        const cancelAddSong = document.getElementById('cancel-add-song');
-        const addSongForm = document.getElementById('add-song-form');
-        const addSongSubmit = document.getElementById('add-song-submit');
-        const lyricsPanel = document.getElementById('lyrics-panel');
-        const lyricsContent = document.getElementById('lyrics-content');
-        const closeLyrics = document.getElementById('close-lyrics');
-        const toastContainer = document.getElementById('toast-container');
-        const settingsButton = document.getElementById('settings-button');
-        const settingsPanel = document.getElementById('settings-panel');
-        const closeSettings = document.getElementById('close-settings');
-        const syncKeyInput = document.getElementById('sync-key');
-        const saveSyncKey = document.getElementById('save-sync-key');
-        const syncStatus = document.getElementById('sync-status');
-        const exportDataBtn = document.getElementById('export-data');
-        const importDataBtn = document.getElementById('import-data');
-        const exportModal = document.getElementById('export-modal');
-        const closeExport = document.getElementById('close-export');
-        const closeExportBtn = document.getElementById('close-export-btn');
-        const exportDataText = document.getElementById('export-data');
-        const copyExport = document.getElementById('copy-export');
-        const importModal = document.getElementById('import-modal');
-        const closeImport = document.getElementById('close-import');
-        const cancelImport = document.getElementById('cancel-import');
-        const importDataText = document.getElementById('import-data');
-        const confirmImport = document.getElementById('confirm-import');
-
-        // YouTube API callback
-        window.onYouTubeIframeAPIReady = function() {
-            player = new YT.Player('youtube-player', {
-                height: '0',
-                width: '0',
-                playerVars: {
-                    'playsinline': 1,
-                    'controls': 0,
-                    'disablekb': 1
-                },
-                events: {
-                    'onReady': onPlayerReady,
-                    'onStateChange': onPlayerStateChange,
-                    'onError': onPlayerError
-                }
-            });
-        };
-
-        function onPlayerReady(event) {
-            playerReady = true;
-            event.target.setVolume(volumeSlider.value);
-        }
-
-        function onPlayerStateChange(event) {
-            playerState = event.data;
-            
-            if (event.data === YT.PlayerState.PLAYING) {
-                isPlaying = true;
-                playPauseButton.innerHTML = '<i class="fas fa-pause"></i>';
-                startProgressInterval();
-            } else if (event.data === YT.PlayerState.PAUSED) {
-                isPlaying = false;
-                playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
-                clearInterval(progressInterval);
-            } else if (event.data === YT.PlayerState.ENDED) {
-                isPlaying = false;
-                playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
-                clearInterval(progressInterval);
-                playNextSong();
-            }
-        }
-
-        function onPlayerError(event) {
-            showToast(`Error: Could not play this video (Code: ${event.data})`, 'error');
-            playNextSong();
-        }
-
-        // Progress bar update
-        let progressInterval;
-
-        function startProgressInterval() {
-            clearInterval(progressInterval);
-            progressInterval = setInterval(updateProgressBar, 500);
-        }
-
-        function updateProgressBar() {
-            if (playerReady && !isSeeking && playerState === YT.PlayerState.PLAYING) {
-                const currentTime = player.getCurrentTime() || 0;
-                const duration = player.getDuration() || 0;
-                
-                if (duration > 0) {
-                    const percentage = (currentTime / duration) * 100;
-                    progress.style.width = `${percentage}%`;
-                    
-                    currentTimeDisplay.textContent = formatTime(currentTime);
-                    durationDisplay.textContent = formatTime(duration);
-                }
-            }
-        }
-
-        function formatTime(seconds) {
-            const minutes = Math.floor(seconds / 60);
-            const remainingSeconds = Math.floor(seconds % 60);
-            return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
-        }
-
-        // Data Management Functions
-        async function loadData() {
-            if (syncMode === 'local') {
-                // Load from localStorage
-                const storedData = localStorage.getItem(STORAGE_KEY);
-                if (storedData) {
-                    try {
-                        appData = JSON.parse(storedData);
-                    } catch (e) {
-                        console.error('Failed to parse stored data:', e);
-                        appData = { playlists: {}, lastUpdated: Date.now() };
-                    }
-                }
-                renderPlaylists();
-            } else {
-                // Load from remote storage
-                try {
-                    syncStatus.innerHTML = '<i class="fas fa-sync fa-spin"></i> Syncing...';
-                    
-                    // Generate bin ID from syncKey using hash
-                    const binId = generateBinId(syncKey);
-                    
-                    const response = await fetch(`${API_URL}/${binId}`);
-                    
-                    if (response.ok) {
-                        const data = await response.json();
-                        
-                        // Compare timestamps to decide which data to use
-                        const remoteData = data.record;
-                        if (remoteData.lastUpdated > appData.lastUpdated) {
-                            appData = remoteData;
-                            saveLocalData(); // Save to local storage as backup
-                        }
-                        
-                        syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
-                        renderPlaylists();
-                    } else if (response.status === 404) {
-                        // Bin doesn't exist yet, create it with current data
-                        appData.lastUpdated = Date.now();
-                        await saveRemoteData();
-                        syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
-                        renderPlaylists();
-                    } else {
-                        throw new Error(`API Error: ${response.status}`);
-                    }
-                } catch (error) {
-                    console.error('Sync failed:', error);
-                    syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #ff0000;"></i> Sync Failed, Using Local Data';
-                    
-                    // Fall back to local data
-                    const storedData = localStorage.getItem(STORAGE_KEY);
-                    if (storedData) {
-                        try {
-                            appData = JSON.parse(storedData);
-                        } catch (e) {
-                            console.error('Failed to parse stored data:', e);
-                        }
-                    }
-                    renderPlaylists();
-                }
-            }
-        }
-
-        function saveLocalData() {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
-        }
-
-        async function saveRemoteData() {
-            if (syncMode !== 'remote' || !syncKey) return;
-            
-            try {
-                // Generate bin ID from syncKey using hash
-                const binId = generateBinId(syncKey);
-                
-                appData.lastUpdated = Date.now();
-                
-                // Check if bin exists
-                const checkResponse = await fetch(`${API_URL}/${binId}`);
-                
-                if (checkResponse.ok) {
-                    // Update existing bin
-                    const updateResponse = await fetch(`${API_URL}/${binId}`, {
-                        method: 'PUT',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Access-Key': API_KEY
-                        },
-                        body: JSON.stringify(appData)
-                    });
-                    
-                    if (!updateResponse.ok) {
-                        throw new Error(`Failed to update remote data: ${updateResponse.status}`);
-                    }
-                } else if (checkResponse.status === 404) {
-                    // Create new bin
-                    const createResponse = await fetch(`${API_URL}`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Access-Key': API_KEY,
-                            'X-Bin-Name': `MelodyBox-${syncKey.substring(0, 8)}`
-                        },
-                        body: JSON.stringify(appData)
-                    });
-                    
-                    if (!createResponse.ok) {
-                        throw new Error(`Failed to create remote storage: ${createResponse.status}`);
-                    }
-                } else {
-                    throw new Error(`API Error: ${checkResponse.status}`);
-                }
-                
-                // Also save to local storage as backup
-                saveLocalData();
-                return true;
-            } catch (error) {
-                console.error('Failed to save remote data:', error);
-                showToast('Failed to sync with remote storage. Changes saved locally.', 'error');
-                return false;
-            }
-        }
-
-        // Hash function to generate consistent bin ID from sync key
-        function generateBinId(key) {
-            return CryptoJS.MD5(key).toString();
-        }
-
-        // Setup sync timer
-        function setupSyncTimer() {
-            if (syncTimer) clearInterval(syncTimer);
-            
-            if (syncMode === 'remote') {
-                syncTimer = setInterval(async () => {
-                    if (syncKey) {
-                        await loadData(); // Check for remote changes
-                    }
-                }, SYNC_INTERVAL);
-            }
-        }
-
-        // Save changes with sync
-        async function saveChanges() {
-            if (syncMode === 'remote') {
-                return await saveRemoteData();
-            } else {
-                saveLocalData();
-                return true;
-            }
-        }
-
-        // Render playlists in the grid
-        function renderPlaylists() {
-            // Clear existing playlists (except create button)
-            while (playlistsGrid.firstChild && playlistsGrid.firstChild !== createPlaylistCard) {
-                playlistsGrid.removeChild(playlistsGrid.firstChild);
-            }
-            
-            // Add playlists
-            const playlists = appData.playlists || {};
-            Object.keys(playlists).forEach(key => {
-                const playlist = playlists[key];
-                const songCount = playlist.songs ? Object.keys(playlist.songs).length : 0;
-                const coverUrl = playlist.coverUrl || 'https://via.placeholder.com/300x300?text=Music';
-                
-                const playlistCard = document.createElement('div');
-                playlistCard.className = 'playlist-card';
-                playlistCard.innerHTML = `
-                    <div class="playlist-cover" style="background-image: url('${coverUrl}')"></div>
-                    <div class="playlist-info">
-                        <h3 class="playlist-title">${playlist.title}</h3>
-                        <p class="playlist-count">${songCount} songs</p>
-                    </div>
-                `;
-                
-                playlistCard.addEventListener('click', () => openPlaylist(key));
-                playlistsGrid.insertBefore(playlistCard, createPlaylistCard);
-            });
-        }
-
-        // Load a specific playlist and switch to player view
-        function openPlaylist(playlistId) {
-            currentPlaylistId = playlistId;
-            playlist = appData.playlists[playlistId] || { songs: {} };
-            
-            currentPlaylistTitle.textContent = playlist.title || 'Untitled Playlist';
-            
-            const songs = playlist.songs || {};
-            const songCount = Object.keys(songs).length;
-            currentPlaylistCount.textContent = `${songCount} songs`;
-            
-            // Clear and rebuild song list
-            songsContainer.innerHTML = '';
-            let index = 0;
-            
-            Object.keys(songs).forEach(songId => {
-                const song = songs[songId];
-                const songElement = createSongElement(song, songId, index);
-                songsContainer.appendChild(songElement);
-                index++;
-            });
-            
-            // Reset player if needed
-            if (currentSongIndex === -1 && songCount > 0) {
-                currentSongIndex = 0;
-            }
-            
-            // Switch to player view
-            playlistsView.classList.remove('active');
-            playerView.classList.add('active');
-        }
-
-        // Create a song element for the list
-        function createSongElement(song, songId, index) {
-            const songItem = document.createElement('div');
-            songItem.className = 'song-item';
-            songItem.dataset.id = songId;
-            songItem.dataset.index = index;
-            
-            const thumbnailUrl = song.thumbnailUrl || 'https://via.placeholder.com/120x120?text=Music';
-            
-            songItem.innerHTML = `
-                <div class="song-number">${index + 1}</div>
-                <div class="song-thumbnail" style="background-image: url('${thumbnailUrl}')"></div>
-                <div class="song-info">
-                    <div class="song-title">${song.title || 'Untitled'}</div>
-                    <div class="song-artist">${song.artist || 'Unknown Artist'}</div>
-                </div>
-                <div class="song-duration">${song.duration || '--:--'}</div>
-                <div class="song-actions">
-                    <button class="song-action-btn delete-song" data-id="${songId}">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                </div>
-            `;
-            
-            songItem.addEventListener('click', (e) => {
-                if (!e.target.closest('.song-actions')) {
-                    currentSongIndex = parseInt(songItem.dataset.index);
-                    playSong(song, songId);
-                }
-            });
-            
-            // Setup delete button
-            const deleteBtn = songItem.querySelector('.delete-song');
-            deleteBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                deleteSong(songId);
-            });
-            
-            return songItem;
-        }
-
-        // Play a song
-        function playSong(song, songId) {
-            if (!playerReady) return;
-            
-            // Update UI
-            const allSongItems = document.querySelectorAll('.song-item');
-            allSongItems.forEach(item => item.classList.remove('active'));
-            
-            const activeSong = document.querySelector(`.song-item[data-id="${songId}"]`);
-            if (activeSong) activeSong.classList.add('active');
-            
-            // Update player info
-            currentSongTitle.textContent = song.title || 'Untitled';
-            currentSongArtist.textContent = song.artist || 'Unknown Artist';
-            
-            const thumbnailUrl = song.thumbnailUrl || 'https://via.placeholder.com/120x120?text=Music';
-            playerCover.style.backgroundImage = `url('${thumbnailUrl}')`;
-            
-            // Load and play YouTube video
-            currentPlayingId = songId;
-            player.loadVideoById(song.youtubeId);
-            
-            // Close lyrics panel if open
-            lyricsPanel.classList.remove('active');
-        }
-
-        // Play next song
-        function playNextSong() {
-            if (!playlist || !playlist.songs) return;
-            
-            const songIds = Object.keys(playlist.songs);
-            if (songIds.length === 0) return;
-            
-            if (shuffleMode) {
-                // Get next shuffled index
-                const currentShuffleIndex = shuffledIndices.indexOf(currentSongIndex);
-                const nextShuffleIndex = (currentShuffleIndex + 1) % shuffledIndices.length;
-                currentSongIndex = shuffledIndices[nextShuffleIndex];
-            } else {
-                // Regular next
-                currentSongIndex = (currentSongIndex + 1) % songIds.length;
-            }
-            
-            const nextSongId = songIds[currentSongIndex];
-            playSong(playlist.songs[nextSongId], nextSongId);
-        }
-
-        // Play previous song
-        function playPrevSong() {
-            if (!playlist || !playlist.songs) return;
-            
-            const songIds = Object.keys(playlist.songs);
-            if (songIds.length === 0) return;
-            
-            if (shuffleMode) {
-                // Get previous shuffled index
-                const currentShuffleIndex = shuffledIndices.indexOf(currentSongIndex);
-                const prevShuffleIndex = (currentShuffleIndex - 1 + shuffledIndices.length) % shuffledIndices.length;
-                currentSongIndex = shuffledIndices[prevShuffleIndex];
-            } else {
-                // Regular previous
-                currentSongIndex = (currentSongIndex - 1 + songIds.length) % songIds.length;
-            }
-            
-            const prevSongId = songIds[currentSongIndex];
-            playSong(playlist.songs[prevSongId], prevSongId);
-        }
-
-        // Toggle play/pause
-        function togglePlayPause() {
-            if (!playerReady) return;
-            
-            if (playerState === YT.PlayerState.PLAYING) {
-                player.pauseVideo();
-            } else {
-                if (currentSongIndex === -1) {
-                    // Start playing the first song
-                    const songIds = Object.keys(playlist.songs || {});
-                    if (songIds.length > 0) {
-                        currentSongIndex = 0;
-                        const firstSongId = songIds[0];
-                        playSong(playlist.songs[firstSongId], firstSongId);
-                    }
-                } else {
-                    player.playVideo();
-                }
-            }
-        }
-
-        // Shuffle playlist
-        function toggleShuffle() {
-            shuffleMode = !shuffleMode;
-            shuffleButton.classList.toggle('active', shuffleMode);
-            
-            if (shuffleMode) {
-                // Create shuffled indices
-                const songIds = Object.keys(playlist.songs || {});
-                shuffledIndices = Array.from({length: songIds.length}, (_, i) => i);
-                
-                // Fisher-Yates shuffle
-                for (let i = shuffledIndices.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [shuffledIndices[i], shuffledIndices[j]] = [shuffledIndices[j], shuffledIndices[i]];
-                }
-                
-                // Make sure current song is first
-                if (currentSongIndex !== -1) {
-                    const currentIndexPos = shuffledIndices.indexOf(currentSongIndex);
-                    shuffledIndices.splice(currentIndexPos, 1);
-                    shuffledIndices.unshift(currentSongIndex);
-                }
-                
-                showToast('Shuffle mode enabled', 'success');
-            } else {
-                showToast('Shuffle mode disabled', 'success');
-            }
-        }
-
-        // Delete a song
-        function deleteSong(songId) {
-            if (confirm('Are you sure you want to delete this song?')) {
-                if (!appData.playlists[currentPlaylistId].songs[songId]) {
-                    showToast('Song not found', 'error');
-                    return;
-                }
-                
-                delete appData.playlists[currentPlaylistId].songs[songId];
-                
-                saveChanges().then(success => {
-                    if (success) {
-                        showToast('Song deleted successfully', 'success');
-                        
-                        // Reload playlist view
-                        openPlaylist(currentPlaylistId);
-                        
-                        // If this was the currently playing song, play next
-                        if (currentPlayingId === songId) {
-                            playNextSong();
-                        }
-                    }
-                });
-            }
-        }
-
-        // Create a new playlist
-        function createPlaylist(title, coverUrl) {
-            const newPlaylistId = 'p_' + Date.now();
-            
-            appData.playlists[newPlaylistId] = {
-                title: title,
-                coverUrl: coverUrl || null,
-                createdAt: Date.now(),
-                songs: {}
-            };
-            
-            saveChanges().then(success => {
-                if (success) {
-                    showToast('Playlist created successfully', 'success');
-                    createPlaylistModal.classList.remove('active');
-                    createPlaylistForm.reset();
-                    renderPlaylists();
-                }
-            });
-        }
-
-        // Add a song to the current playlist
-        function addSong(youtubeUrl, customTitle, customArtist, customThumbnail) {
-            if (!currentPlaylistId) return;
-            
-            // Show loading state
-            const submitButton = addSongSubmit.querySelector('span');
-            const originalText = submitButton.textContent;
-            submitButton.innerHTML = '<div class="loading-spinner"></div> Adding...';
-            addSongSubmit.disabled = true;
-            
-            // Extract YouTube ID from URL
-            const youtubeId = extractYoutubeId(youtubeUrl);
-            
-            if (!youtubeId) {
-                showToast('Invalid YouTube URL', 'error');
-                submitButton.textContent = originalText;
-                addSongSubmit.disabled = false;
-                return;
-            }
-            
-            // Fetch video info from YouTube
-            fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${youtubeId}`)
-                .then(response => response.json())
-                .then(data => {
-                    const title = customTitle || data.title || 'Unknown Title';
-                    let artist = customArtist;
-                    
-                    // Try to extract artist from title if not provided
-                    if (!artist && data.title) {
-                        const separator = data.title.includes(' - ') ? ' - ' : ' – ';
-                        if (data.title.includes(separator)) {
-                            artist = data.title.split(separator)[0].trim();
-                        } else {
-                            artist = data.author_name || 'Unknown Artist';
-                        }
-                    }
-                    
-                    // Default thumbnail from YouTube
-                    let thumbnailUrl = customThumbnail;
-                    if (!thumbnailUrl) {
-                        thumbnailUrl = `https://img.youtube.com/vi/${youtubeId}/hqdefault.jpg`;
-                    }
-                    
-                    // Add to playlist
-                    const newSongId = 's_' + Date.now();
-                    if (!appData.playlists[currentPlaylistId].songs) {
-                        appData.playlists[currentPlaylistId].songs = {};
-                    }
-                    
-                    appData.playlists[currentPlaylistId].songs[newSongId] = {
-                        youtubeId: youtubeId,
-                        title: title,
-                        artist: artist || 'Unknown Artist',
-                        thumbnailUrl: thumbnailUrl,
-                        addedAt: Date.now()
-                    };
-                    
-                    saveChanges().then(success => {
-                        if (success) {
-                            showToast('Song added successfully', 'success');
-                            addSongModal.classList.remove('active');
-                            addSongForm.reset();
-                            
-                            // Reload playlist
-                            openPlaylist(currentPlaylistId);
-                        }
-                    }).finally(() => {
-                        submitButton.textContent = originalText;
-                        addSongSubmit.disabled = false;
-                    });
-                })
-                .catch(error => {
-                    console.error('Error fetching video info:', error);
-                    showToast('Error fetching video info', 'error');
-                    submitButton.textContent = originalText;
-                    addSongSubmit.disabled = false;
-                });
-        }
-
-        // Extract YouTube ID from URL
-        function extractYoutubeId(url) {
-            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-            const match = url.match(regExp);
-            return (match && match[2].length === 11) ? match[2] : null;
-        }
-
-        // Show lyrics for current song
-        function showLyrics() {
-            if (!currentPlayingId || !playlist || !playlist.songs) return;
-            
-            const song = playlist.songs[currentPlayingId];
-            if (!song) return;
-            
-            lyricsPanel.classList.add('active');
-            lyricsContent.textContent = 'Searching for lyrics...';
-            
-            // Try to fetch lyrics from public API
-            const searchTerm = `${song.artist} ${song.title}`;
-            fetch(`https://api.lyrics.ovh/v1/${encodeURIComponent(song.artist)}/${encodeURIComponent(song.title)}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.lyrics) {
-                        lyricsContent.textContent = data.lyrics;
-                    } else {
-                        lyricsContent.textContent = 'Lyrics not found. Try searching for:\n' + searchTerm;
-                    }
-                })
-                .catch(error => {
-                    lyricsContent.textContent = 'Could not load lyrics. Try searching for:\n' + searchTerm;
-                    console.error('Lyrics error:', error);
-                });
-        }
-
-        // Export data
-        function exportData() {
-            exportDataText.value = JSON.stringify(appData, null, 2);
-            exportModal.classList.add('active');
-        }
-
-        // Import data
-        function importData() {
-            importModal.classList.add('active');
-        }
-
-        function processImport() {
-            try {
-                const importedData = JSON.parse(importDataText.value);
-                
-                if (!importedData.playlists) {
-                    throw new Error('Invalid data format');
-                }
-                
-                appData = importedData;
-                saveChanges().then(success => {
-                    if (success) {
-                        showToast('Data imported successfully', 'success');
-                        importModal.classList.remove('active');
-                        renderPlaylists();
-                    }
-                });
-            } catch (error) {
-                showToast('Invalid data format. Please check your import data.', 'error');
-                console.error('Import error:', error);
-            }
-        }
-
-        // Change sync mode
-        function changeSyncMode(key) {
-            if (key) {
-                syncKey = key;
-                syncMode = 'remote';
-                localStorage.setItem('melodybox_sync_key', key);
-                syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
-            } else {
-                syncKey = '';
-                syncMode = 'local';
-                localStorage.removeItem('melodybox_sync_key');
-                syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #ff7e5f;"></i> Local Mode';
-            }
-            
-            setupSyncTimer();
-            loadData();
-        }
-
-        // Show toast notification
-        function showToast(message, type = 'success') {
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            
-            const icon = type === 'success' ? 'check-circle' : 'exclamation-circle';
-            
-            toast.innerHTML = `
-                <i class="fas fa-${icon} toast-icon"></i>
-                <div>${message}</div>
-            `;
-            
-            toastContainer.appendChild(toast);
-            
-            // Remove toast after 3 seconds
-            setTimeout(() => {
-                toast.style.opacity = '0';
-                setTimeout(() => {
-                    if (toast.parentNode === toastContainer) {
-                        toastContainer.removeChild(toast);
-                    }
-                }, 500);
-            }, 3000);
-        }
-
-        // Event Listeners
-        createPlaylistCard.addEventListener('click', () => {
-            createPlaylistModal.classList.add('active');
-        });
-
-        createPlaylistBtn.addEventListener('click', () => {
-            createPlaylistModal.classList.add('active');
-        });
-
-        closeCreatePlaylist.addEventListener('click', () => {
-            createPlaylistModal.classList.remove('active');
-        });
-
-        cancelCreatePlaylist.addEventListener('click', () => {
-            createPlaylistModal.classList.remove('active');
-        });
-
-        createPlaylistForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const title = document.getElementById('playlist-title').value;
-            const coverUrl = document.getElementById('playlist-cover-url').value;
-            createPlaylist(title, coverUrl);
-        });
-
-        addSongBtn.addEventListener('click', () => {
-            addSongModal.classList.add('active');
-        });
-
-        closeAddSong.addEventListener('click', () => {
-            addSongModal.classList.remove('active');
-        });
-
-        cancelAddSong.addEventListener('click', () => {
-            addSongModal.classList.remove('active');
-        });
-
-        addSongForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const youtubeUrl = document.getElementById('song-url').value;
-            const customTitle = document.getElementById('song-title').value;
-            const customArtist = document.getElementById('song-artist').value;
-            const customThumbnail = document.getElementById('song-thumbnail').value;
-            addSong(youtubeUrl, customTitle, customArtist, customThumbnail);
-        });
-
-        backButton.addEventListener('click', () => {
-            playerView.classList.remove('active');
-            playlistsView.classList.add('active');
-        });
-
-        playPauseButton.addEventListener('click', togglePlayPause);
-        
-        nextButton.addEventListener('click', playNextSong);
-        
-        prevButton.addEventListener('click', playPrevSong);
-        
-        shuffleButton.addEventListener('click', toggleShuffle);
-        
-        shufflePlaylistBtn.addEventListener('click', toggleShuffle);
-        
-        lyricsButton.addEventListener('click', showLyrics);
-        
-        closeLyrics.addEventListener('click', () => {
-            lyricsPanel.classList.remove('active');
-        });
-
-        settingsButton.addEventListener('click', () => {
-            syncKeyInput.value = syncKey;
-            settingsPanel.classList.add('active');
-        });
-        
-        closeSettings.addEventListener('click', () => {
-            settingsPanel.classList.remove('active');
-        });
-        
-        saveSyncKey.addEventListener('click', () => {
-            const newKey = syncKeyInput.value.trim();
-            if (newKey) {
-                changeSyncMode(newKey);
-                showToast('Sync key saved. Your playlists will now sync across devices.', 'success');
-            } else {
-                changeSyncMode('');
-                showToast('Local mode activated. Playlists will only be stored on this device.', 'success');
-            }
-        });
-        
-        exportDataBtn.addEventListener('click', exportData);
-        
-        importDataBtn.addEventListener('click', importData);
-        
-        closeExport.addEventListener('click', () => {
-            exportModal.classList.remove('active');
-        });
-        
-        closeExportBtn.addEventListener('click', () => {
-            exportModal.classList.remove('active');
-        });
-        
-        copyExport.addEventListener('click', () => {
-            exportDataText.select();
-            document.execCommand('copy');
-            showToast('Data copied to clipboard', 'success');
-        });
-        
-        closeImport.addEventListener('click', () => {
-            importModal.classList.remove('active');
-        });
-        
-        cancelImport.addEventListener('click', () => {
-            importModal.classList.remove('active');
-        });
-        
-        confirmImport.addEventListener('click', processImport);
-
-        // Progress bar seeking
-        progressBar.addEventListener('click', (e) => {
-            if (!playerReady || playerState === -1) return;
-            
-            const rect = progressBar.getBoundingClientRect();
-            const ratio = (e.clientX - rect.left) / rect.width;
-            const duration = player.getDuration();
-            
-            isSeeking = true;
-            player.seekTo(duration * ratio);
-            setTimeout(() => { isSeeking = false; }, 500);
-        });
-
-        // Volume control
-        volumeSlider.addEventListener('input', () => {
-            if (playerReady) {
-                player.setVolume(volumeSlider.value);
-            }
-        });
-
-        // Initialize
-        syncKeyInput.value = syncKey;
-        if (syncKey) {
-            syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #4CAF50;"></i> Remote Sync Active';
-        } else {
-            syncStatus.innerHTML = '<i class="fas fa-circle" style="color: #ff7e5f;"></i> Local Mode';
-        }
-        
-        loadData();
-        setupSyncTimer();
-    </script>
-</body>
-</html>
+                <textarea i
